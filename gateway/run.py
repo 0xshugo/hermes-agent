@@ -17312,7 +17312,15 @@ class GatewayRunner:
             
             # Verbose mode: show detailed arguments, respects tool_preview_length
             if progress_mode == "verbose":
-                if args:
+                if (
+                    source.platform == Platform.TELEGRAM
+                    and tool_name == "terminal"
+                    and isinstance(args, dict)
+                    and isinstance(args.get("command"), str)
+                    and args["command"].strip()
+                ):
+                    msg = f"```bash\n{args['command'].rstrip()}\n```"
+                elif args:
                     from agent.display import get_tool_preview_max_len
                     _pl = get_tool_preview_max_len()
                     args_str = json.dumps(args, ensure_ascii=False, default=str)
@@ -17332,7 +17340,24 @@ class GatewayRunner:
             # "all" / "new" modes: short preview, respects tool_preview_length
             # config (defaults to 40 chars when unset to keep gateway messages
             # compact — unlike CLI spinners, these persist as permanent messages).
-            if preview:
+            #
+            # Telegram terminal calls render as a native ```bash fenced block
+            # (the full command, no truncation, no surrounding quotes) — its
+            # MarkdownV2 path protects fenced regions, so this lands as a real
+            # code block instead of the noisy `terminal: "cmd…"` line.
+            _tg_bash_block = None
+            if (
+                source.platform == Platform.TELEGRAM
+                and tool_name == "terminal"
+                and isinstance(args, dict)
+                and isinstance(args.get("command"), str)
+                and args["command"].strip()
+            ):
+                _tg_bash_block = f"```bash\n{args['command'].rstrip()}\n```"
+
+            if _tg_bash_block is not None:
+                msg = _tg_bash_block
+            elif preview:
                 from agent.display import get_tool_preview_max_len
                 _pl = get_tool_preview_max_len()
                 _cap = _pl if _pl > 0 else 40
