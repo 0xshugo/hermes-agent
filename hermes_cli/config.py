@@ -3682,6 +3682,22 @@ def set_config_value(key: str, value: str, force: bool = False):
     key = _guard_section_overwrite(key, value, user_config, force)
     value = _refuse_container_type_mismatch(key, value, user_config, force)
     _old_provider = _model_val.get("provider") if isinstance(_model_val, dict) else None
+    # Non-``model`` provider switches (``auxiliary.<task>.provider``, ``delegation.provider``,
+    # ``moa.presets.<p>.aggregator.provider``) leave the SAME stale route behind: the block keeps
+    # the previous provider's ``base_url``/``api_mode``, and the runtime honours them for whatever
+    # provider the block now names — the new provider's key is posted to the old endpoint. Capture
+    # the section so the switch below syncs its route exactly as ``model.provider`` does.
+    _section_route_parent = None
+    _section_old_provider = None
+    if key.endswith(".provider") and key != "model.provider":
+        _candidate = user_config
+        for _part in key.split(".")[:-1]:
+            _candidate = _candidate.get(_part) if isinstance(_candidate, dict) else None
+            if _candidate is None:
+                break
+        if isinstance(_candidate, dict):
+            _section_route_parent = _candidate
+            _section_old_provider = _candidate.get("provider")
     try:
         _set_nested(user_config, key, value)
     except ValueError as e:
@@ -3708,6 +3724,24 @@ def set_config_value(key: str, value: str, force: bool = False):
                 f"⚠ model.base_url ({user_config['model'].get('base_url')}) was set under {_old_provider} and "
                 f"still applies to {value} — requests go there. If it is not {value}'s endpoint: "
                 "`hermes config unset model.base_url` (and model.api_mode).", Colors.YELLOW)
+    elif _section_route_parent is not None:
+        # Same route-sync for a nested provider switch (auxiliary.<task>, delegation, MoA aggregator).
+        _section_prev = str(_section_old_provider or "").strip() or "the previous provider"
+        if _section_prev.lower() != str(value).strip().lower():
+            from hermes_cli.route_identity import drop_stale_model_route
+            _popped, _unverified = drop_stale_model_route(_section_route_parent, value, user_config)
+            _prefix = key.rsplit(".", 1)[0]
+            if _popped:
+                _route_notice = (
+                    "  Cleared " + ", ".join(f"{_prefix}.{k} ({v})" for k, v in _popped.items())
+                    + f" — that route belonged to {_section_prev}, not {value}. {value}'s endpoint resolves "
+                    f"automatically; set {_prefix}.base_url again if you meant a custom endpoint.")
+            elif _unverified:
+                _route_notice = color(
+                    f"⚠ {_prefix}.base_url ({_section_route_parent.get('base_url')}) was set under "
+                    f"{_section_prev} and still applies to {value} — requests go there. If it is not "
+                    f"{value}'s endpoint: `hermes config unset {_prefix}.base_url` (and {_prefix}.api_mode).",
+                    Colors.YELLOW)
     # api_base -> base_url alias at set-time too (mirrors _normalize_root_model_keys).
     if key.strip().lower() in ("model.api_base", "api_base"):
         # Normalize the api_base → base_url alias at set-time too (issue #8919), so a fresh `hermes config

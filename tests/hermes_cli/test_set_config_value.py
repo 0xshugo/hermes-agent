@@ -1096,3 +1096,58 @@ class TestProviderSwitchClearsBaseUrl:
         assert "Cleared" not in out
         # Unknown host: kept, but the user is told the old route still applies (from #113725).
         assert ("still applies" in out) == ("proxy.internal" in seed["base_url"])
+
+
+class TestNestedProviderSwitchClearsBaseUrl:
+    """``config set <section>.provider X`` for a NESTED section (``auxiliary.<task>``,
+    ``delegation``, ``moa.presets.<p>.aggregator``) must not carry the previous provider's route
+    either — the same class the ``model.provider`` guard covers (#113719, #40862), reached through
+    a nested block. Without this, ``config set auxiliary.vision.provider nous`` kept
+    ``base_url: https://chatgpt.com/backend-api/codex`` and the task posted its key to the old
+    endpoint (or silently fell back)."""
+
+    CODEX_ROUTE = {"base_url": "https://chatgpt.com/backend-api/codex", "api_mode": "codex_responses"}
+
+    def _seed(self, tmp_path, config):
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump(config))
+
+    def test_auxiliary_provider_switch_clears_foreign_route(self, _isolated_hermes_home, capsys):
+        self._seed(_isolated_hermes_home, {
+            "auxiliary": {"vision": {"provider": "openai-codex", "model": "gpt-6-terra", **self.CODEX_ROUTE}}})
+
+        set_config_value("auxiliary.vision.provider", "nous")
+
+        vision = yaml.safe_load(_read_config(_isolated_hermes_home))["auxiliary"]["vision"]
+        assert vision == {"provider": "nous", "model": "gpt-6-terra"}
+        out = capsys.readouterr().out
+        assert "Cleared" in out and "openai-codex" in out
+        assert "auxiliary.vision.base_url" in out
+
+    def test_delegation_provider_switch_clears_foreign_route(self, _isolated_hermes_home, capsys):
+        self._seed(_isolated_hermes_home, {
+            "delegation": {"provider": "openai-codex", "model": "gpt-6-sol", **self.CODEX_ROUTE}})
+
+        set_config_value("delegation.provider", "nous")
+
+        delegation = yaml.safe_load(_read_config(_isolated_hermes_home))["delegation"]
+        assert delegation == {"provider": "nous", "model": "gpt-6-sol"}
+        assert "Cleared" in capsys.readouterr().out
+
+    def test_nested_route_kept_for_same_provider_and_unknown_host(self, _isolated_hermes_home, capsys):
+        self._seed(_isolated_hermes_home, {
+            "auxiliary": {
+                "vision": {"provider": "openai-codex", "model": "m", **self.CODEX_ROUTE},
+                "compression": {"provider": "openai", "model": "m", "base_url": "http://proxy.internal:8080/v1"},
+            }})
+
+        # Same provider: no route churn and no notice.
+        set_config_value("auxiliary.vision.provider", "openai-codex")
+        # Unknown-ownership host: kept, but the user is warned the old route still applies.
+        set_config_value("auxiliary.compression.provider", "anthropic")
+
+        auxiliary = yaml.safe_load(_read_config(_isolated_hermes_home))["auxiliary"]
+        assert auxiliary["vision"]["base_url"] == self.CODEX_ROUTE["base_url"]
+        assert auxiliary["compression"]["base_url"] == "http://proxy.internal:8080/v1"
+        out = capsys.readouterr().out
+        assert "Cleared" not in out
+        assert "still applies" in out and "auxiliary.compression.base_url" in out
